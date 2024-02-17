@@ -10,6 +10,13 @@ option(ENABLE_SFIZZ "" ON)
 option(ENABLE_ASAN "" OFF)
 option(VERBOSE "" OFF)
 
+option(LV2_ONLY "Build plugin only as LV2" OFF)
+if(LV2_ONLY)
+  set(PLUGDATA_JUCE_FORMATS_OVERRIDE ON CACHE BOOL "JUCE plugin formats")
+  set(PLUGDATA_SKIP_STANDALONE ON CACHE BOOL "Don't build standalone")
+  set(PLUGDATA_SKIP_CLAP ON CACHE BOOL "Don't build CLAP")
+endif()
+
 set (CMAKE_CXX_STANDARD 20)
 
 # Visiblity needs to be hidden for all plugin targets, otherwise loading both plugdata and plugdata-fx will cause problems. We later undo this for the standalone build, so that externals can load
@@ -317,6 +324,11 @@ juce_add_plugin(plugdata_standalone
     )
 endif()
 
+set(PLUGDATA_JUCE_FORMATS AU AUv3 VST3 LV2 CLAP)
+if(PLUGDATA_JUCE_FORMATS_OVERRIDE)
+  set(PLUGDATA_JUCE_FORMATS ${PLUGDATA_JUCE_FORMATS_OVERRIDE})
+endif()
+
 juce_add_plugin(plugdata
     VERSION                     ${PLUGDATA_VERSION}
     COMPANY_NAME                ${PLUGDATA_COMPANY_NAME}
@@ -335,7 +347,7 @@ juce_add_plugin(plugdata
     COPY_PLUGIN_AFTER_BUILD     FALSE
     PLUGIN_MANUFACTURER_CODE    PlDt
     PLUGIN_CODE                 PdIn
-    FORMATS                     AU AUv3 VST3 LV2 CLAP
+    FORMATS                     ${PLUGDATA_JUCE_FORMATS}
     LV2URI                      https://github.com/timothyschoen/plugdata
     PRODUCT_NAME                "plugdata"
     BUNDLE_ID                   com.plugdata.plugdata.instrument
@@ -360,7 +372,7 @@ juce_add_plugin(plugdata_fx
     COPY_PLUGIN_AFTER_BUILD     FALSE
     PLUGIN_MANUFACTURER_CODE    PlDt
     PLUGIN_CODE                 PdFx
-    FORMATS                     AU AUv3 VST3 LV2 CLAP
+    FORMATS                     ${PLUGDATA_JUCE_FORMATS}
     LV2URI                      https://github.com/timothyschoen/plugdata-fx
     PRODUCT_NAME                "plugdata-fx"
     BUNDLE_ID                   com.plugdata.plugdata.fx
@@ -393,7 +405,8 @@ juce_add_plugin(plugdata_midi
     AU_MAIN_TYPE                kAudioUnitType_MIDIProcessor)
 endif()
 
-if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.21")
+if(PLUGDATA_SKIP_CLAP)
+elseif(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.21")
   # Silence excessive messaging from juce-clap-extensions
   # Enable verbose flag to see these messages
   if(VERBOSE)
@@ -415,6 +428,10 @@ if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.21")
 else()
   message(NOTICE "\n\nWarning: Building CLAP plugins requires at least cmake 3.21, you have ${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}")
   message(NOTICE "CLAP plugin build will be disabed\n\n")
+endif()
+
+if(PLUGDATA_SKIP_STANDALONE)
+  set_target_properties(plugdata_standalone PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 
 target_sources(plugdata_standalone PUBLIC ${plugdata_standalone_sources} ${SOURCES_DIRECTORY}/Utility/Config.cpp ${SOURCES_DIRECTORY}/Standalone/InternalSynth.cpp)
@@ -565,18 +582,26 @@ elseif(WIN32)
   install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/LV2/pd.dll DESTINATION "$ENV{PROGRAMFILES}/plugdata/")
 elseif(NOT UNIX) # Past this point, Linux or BSD
 elseif(PLUGDATA_INSTALL_USER)
-  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "$ENV{HOME}/.vst3")
-  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "$ENV{HOME}/.vst3")
+  if(TARGET plugdata_VST3)
+    install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "$ENV{HOME}/.vst3")
+    install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "$ENV{HOME}/.vst3")
+  endif()
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata.lv2 DESTINATION "$ENV{HOME}/.lv2")
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata-fx.lv2 DESTINATION "$ENV{HOME}/.lv2")
-  install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata DESTINATION "$ENV{HOME}/.local/bin")
+  if(NOT PLUGDATA_SKIP_STANDALONE)
+    install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata DESTINATION "$ENV{HOME}/.local/bin")
+  endif()
   #TODO: install Kott's .desktop file
 else()
-  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3")
-  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3")
+  if(TARGET plugdata_VST3)
+    install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3")
+    install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3")
+  endif()
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata.lv2 DESTINATION "${CMAKE_INSTALL_LIBDIR}/lv2")
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata-fx.lv2 DESTINATION "${CMAKE_INSTALL_LIBDIR}/lv2")
-  install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(NOT PLUGDATA_SKIP_STANDALONE)
+    install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
 endif()
 
 #add_custom_target(plugdata_standalone ALL)
