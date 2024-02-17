@@ -543,6 +543,10 @@ if(MSVC)
 set_target_properties(pthreadVC3 pthreadVSE3 pthreadVCE3 PROPERTIES EXCLUDE_FROM_ALL 1 EXCLUDE_FROM_DEFAULT_BUILD 1)
 endif()
 
+option(PLUGDATA_INSTALL_USER "On Linux/BSD, install to user home (~/.lv2, ~/.vst3, etc.)" OFF)
+
+include(GNUInstallDirs)
+
 if(APPLE)
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "/Library/Audio/Plug-ins/VST3")
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "/Library/Audio/Plug-ins/VST3")
@@ -559,12 +563,20 @@ elseif(WIN32)
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata-fx.lv2 DESTINATION "$ENV{PROGRAMFILES}/Common Files/LV2")
   install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata.exe DESTINATION "$ENV{PROGRAMFILES}/plugdata/")
   install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/LV2/pd.dll DESTINATION "$ENV{PROGRAMFILES}/plugdata/")
-elseif(UNIX AND NOT APPLE) # Linux or BSD
+elseif(NOT UNIX) # Past this point, Linux or BSD
+elseif(PLUGDATA_INSTALL_USER)
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "$ENV{HOME}/.vst3")
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "$ENV{HOME}/.vst3")
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata.lv2 DESTINATION "$ENV{HOME}/.lv2")
   install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata-fx.lv2 DESTINATION "$ENV{HOME}/.lv2")
-  #TODO: install standalone and Kott's .desktop file
+  install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata DESTINATION "$ENV{HOME}/.local/bin")
+  #TODO: install Kott's .desktop file
+else()
+  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata.vst3 DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3")
+  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/VST3/plugdata-fx.vst3 DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3")
+  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata.lv2 DESTINATION "${CMAKE_INSTALL_LIBDIR}/lv2")
+  install(DIRECTORY ${PLUGDATA_PLUGINS_LOCATION}/LV2/plugdata-fx.lv2 DESTINATION "${CMAKE_INSTALL_LIBDIR}/lv2")
+  install(PROGRAMS ${PLUGDATA_PLUGINS_LOCATION}/Standalone/plugdata DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 #add_custom_target(plugdata_standalone ALL)
