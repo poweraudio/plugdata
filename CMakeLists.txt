@@ -12,7 +12,7 @@ option(VERBOSE "" OFF)
 
 option(LV2_ONLY "Build plugin only as LV2" OFF)
 if(LV2_ONLY)
-  set(PLUGDATA_JUCE_FORMATS_OVERRIDE ON CACHE BOOL "JUCE plugin formats")
+  set(PLUGDATA_JUCE_FORMATS_OVERRIDE LV2 CACHE STRING "JUCE plugin formats")
   set(PLUGDATA_SKIP_STANDALONE ON CACHE BOOL "Don't build standalone")
   set(PLUGDATA_SKIP_CLAP ON CACHE BOOL "Don't build CLAP")
 endif()
