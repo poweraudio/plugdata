@@ -1,3 +1,23 @@
+**PowerAudio fork of plugdata**
+
+This fork of plugdata has the following changes:
+
+* The plugin is built with [a fork of JUCE] that includes fixes for IBM Power.
+* sfizz is disabled on Power to prevent compilation errors.
+* Files are installed to `CMAKE_INSTALL_PREFIX` by default instead of `$HOME`
+  (configurable with `PLUGDATA_INSTALL_USER`).
+* In the [`lv2-only`] branch, added CMake option `LV2_ONLY` to build the plugin
+  only as LV2.
+
+The following changes have since been merged upstream:
+
+* Fixed permissions of directories created during installation.
+
+[a fork of JUCE]: https://github.com/poweraudio/plugdata-juce
+[`lv2-only`]: https://github.com/poweraudio/plugdata/tree/lv2-only
+
+---
+
 <p align="center">
   <a href="https://github.com/plugdata-team/plugdata/wiki">
     <img src="https://github.com/plugdata-team/plugdata/assets/44585538/17062f59-bb1b-442e-a0ba-a96a74327460" alt="Logo" width=130 height=130>
