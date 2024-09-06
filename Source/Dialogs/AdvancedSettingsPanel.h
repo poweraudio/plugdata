@@ -24,7 +24,6 @@ public:
         if (ProjectInfo::isStandalone) {
             nativeTitlebar.referTo(settingsFile->getPropertyAsValue("native_window"));
             macTitlebarButtons.referTo(settingsFile->getPropertyAsValue("macos_buttons"));
-            reloadPatch.referTo(settingsFile->getPropertyAsValue("reload_last_state"));
 
             macTitlebarButtons.addListener(this);
             nativeTitlebar.addListener(this);
@@ -35,8 +34,6 @@ public:
             windowProperties.add(new PropertiesPanel::BoolComponent("Use macOS style window buttons", macTitlebarButtons, { "No", "Yes" }));
 
             propertiesPanel.addSection("Window", windowProperties);
-
-            otherProperties.add(new PropertiesPanel::BoolComponent("Reload last opened patch on startup", reloadPatch, { "No", "Yes" }));
         } else {
 
             if (!settingsTree.hasProperty("NativeDialog")) {
@@ -129,6 +126,9 @@ public:
         centreSidepanelButtons = settingsFile->getPropertyAsValue("centre_sidepanel_buttons");
         interfaceProperties.add(new PropertiesPanel::BoolComponent("Centre canvas sidepanel selectors", centreSidepanelButtons, { "No", "Yes" }));
 
+        patchDownwardsOnly = settingsFile->getPropertyAsValue("patch_downwards_only");
+        otherProperties.add(new PropertiesPanel::BoolComponent("Patch downwards only", patchDownwardsOnly, { "No", "Yes" }));
+
         propertiesPanel.addSection("Interface", interfaceProperties);
         propertiesPanel.addSection("Autosave", autosaveProperties);
         propertiesPanel.addSection("Other", otherProperties);
@@ -178,7 +178,6 @@ public:
 
     Value nativeTitlebar;
     Value macTitlebarButtons;
-    Value reloadPatch;
     Value scaleValue;
     Value defaultZoom;
     Value centreResized;
@@ -190,6 +189,8 @@ public:
     Value nativeDialogValue;
     Value autosaveInterval;
     Value autosaveEnabled;
+
+    Value patchDownwardsOnly;
 
     PropertiesPanel propertiesPanel;
 

@@ -6,44 +6,25 @@
 
 // Graph bounds component
 class GraphArea : public Component
-    , public ComponentDragger
+    , public NVGComponent
     , public Value::Listener {
-
-    class GraphAreaResizer : public ResizableCornerComponent {
-    public:
-        using ResizableCornerComponent::ResizableCornerComponent;
-
-        void paint(Graphics& g) override
-        {
-            auto w = getWidth();
-            auto h = getHeight();
-
-            Path triangle;
-            triangle.addTriangle(Point<float>(0, h), Point<float>(w, h), Point<float>(w, 0));
-
-            Path roundEdgeClipping;
-            roundEdgeClipping.addRoundedRectangle(Rectangle<int>(0, 0, w, h), Corners::objectCornerRadius);
-
-            g.saveState();
-            g.reduceClipRegion(roundEdgeClipping);
-            g.setColour(findColour(PlugDataColour::resizeableCornerColourId).withAlpha(isMouseOver() ? 1.0f : 0.6f));
-            g.fillPath(triangle);
-            g.restoreState();
-        }
-    };
-
-    GraphAreaResizer resizer;
+    ComponentBoundsConstrainer constrainer;
+    ResizableBorderComponent resizer;
     Canvas* canvas;
+    Rectangle<float> topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner;
 
 public:
     explicit GraphArea(Canvas* parent)
-        : resizer(this, nullptr)
+        : NVGComponent(this)
+        , resizer(this, &constrainer)
         , canvas(parent)
     {
         addAndMakeVisible(resizer);
         updateBounds();
-        setMouseCursor(MouseCursor::UpDownLeftRightResizeCursor);
 
+        constrainer.setMinimumSize(12, 12);
+
+        resizer.setBorderThickness(BorderSize<int>(4, 4, 4, 4));
         resizer.addMouseListener(this, false);
         canvas->locked.addListener(this);
         valueChanged(canvas->locked);
@@ -59,29 +40,64 @@ public:
         setVisible(!getValue<bool>(v));
     }
 
-    void paint(Graphics& g) override
+    void render(NVGcontext* nvg) override
     {
-        g.setColour(findColour(PlugDataColour::resizeableCornerColourId));
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), Corners::objectCornerRadius, 2.0f);
+        auto lineBounds = getLocalBounds().toFloat().reduced(4.0f);
+        auto graphAreaColour = convertColour(findColour(PlugDataColour::graphAreaColourId));
+
+        nvgDrawRoundedRect(nvg, lineBounds.getX(), lineBounds.getY(), lineBounds.getWidth(), lineBounds.getHeight(), nvgRGBAf(0, 0, 0, 0), graphAreaColour, Corners::objectCornerRadius);
+
+        auto &resizeHandleImage = canvas->resizeGOPHandleImage;
+        int angle = 360;
+
+        auto getVert = [lineBounds](int index) -> Point<float> {
+            switch(index){
+                case 0:
+                    return lineBounds.getTopLeft();
+                case 1:
+                    return lineBounds.getBottomLeft();
+                case 2:
+                    return lineBounds.getBottomRight();
+                case 3:
+                    return lineBounds.getTopRight();
+                default:
+                    return { };
+            }
+        };
+
+        for (int i = 0; i < 4; i++) {
+            NVGScopedState scopedState(nvg);
+            // Rotate around centre
+            nvgTranslate(nvg, getVert(i).x, getVert(i).y);
+            nvgRotate(nvg, degreesToRadians<float>(angle));
+            nvgTranslate(nvg, -3.0f, -3.0f);
+
+            nvgBeginPath(nvg);
+            nvgRect(nvg, 0, 0, 9, 9);
+            nvgFillPaint(nvg, nvgImagePattern(nvg, 0, 0, 9, 9, 0, resizeHandleImage.getImageId(), 1));
+            nvgFill(nvg);
+            angle -= 90;
+        }
     }
 
     bool hitTest(int x, int y) override
     {
-        return !getLocalBounds().reduced(8).contains(Point<int>(x, y));
+        return (topLeftCorner.contains(x, y) || topRightCorner.contains(x, y) || bottomLeftCorner.contains(x, y) || bottomRightCorner.contains(x, y)) && !getLocalBounds().reduced(4).contains(x, y);
     }
 
-    void mouseDown(MouseEvent const& e) override
+    void mouseEnter(MouseEvent const& e) override
     {
-        if (e.originalComponent != &resizer) {
-            startDraggingComponent(this, e);
-        }
+        repaint();
     }
 
-    void mouseDrag(MouseEvent const& e) override
+    void mouseExit(MouseEvent const& e) override
     {
-        if (e.originalComponent != &resizer) {
-            dragComponent(this, e, nullptr);
-        }
+        repaint();
+    }
+
+    void mouseMove(MouseEvent const& e) override
+    {
+        repaint();
     }
 
     void mouseUp(MouseEvent const& e) override
@@ -92,28 +108,37 @@ public:
 
     void resized() override
     {
-        int handleSize = 20;
+        topLeftCorner = getLocalBounds().toFloat().removeFromTop(9).removeFromLeft(9).translated(0.5f, 0.5f);
+        topRightCorner = getLocalBounds().toFloat().removeFromTop(9).removeFromRight(9).translated(-0.5f, 0.5f);
+        bottomLeftCorner = getLocalBounds().toFloat().removeFromBottom(9).removeFromLeft(9).translated(0.5f, -0.5f);
+        bottomRightCorner = getLocalBounds().toFloat().removeFromBottom(9).removeFromRight(9).translated(-0.5f, -0.5f);
 
-        resizer.setBounds(getWidth() - handleSize, getHeight() - handleSize, handleSize, handleSize);
-
-        canvas->updateDrawables();
-
+        resizer.setBounds(getLocalBounds());
         repaint();
+
+        // Update parent canvas directly (needed if open in splitview)
+        applyBounds();
+        canvas->synchroniseAllCanvases();
     }
 
     void applyBounds()
     {
         if (auto cnv = canvas->patch.getPointer()) {
-            cnv->gl_pixwidth = getWidth() - 2;
-            cnv->gl_pixheight = getHeight() - 2;
+            cnv->gl_pixwidth = getWidth() - 8 - 1;
+            cnv->gl_pixheight = getHeight() - 8 - 1;
 
-            cnv->gl_xmargin = getX() - canvas->canvasOrigin.x + 1;
-            cnv->gl_ymargin = getY() - canvas->canvasOrigin.y + 1;
+            cnv->gl_xmargin = getX() - canvas->canvasOrigin.x + 4;
+            cnv->gl_ymargin = getY() - canvas->canvasOrigin.y + 4;
         }
+
+        canvas->updateDrawables();
     }
 
     void updateBounds()
     {
-        setBounds(canvas->patch.getBounds().expanded(1).translated(canvas->canvasOrigin.x, canvas->canvasOrigin.y));
+        auto patchBounds = canvas->patch.getBounds().expanded(4.0f);
+        auto width = patchBounds.getWidth() + 1;
+        auto height = patchBounds.getHeight() + 1;
+        setBounds(patchBounds.translated(canvas->canvasOrigin.x, canvas->canvasOrigin.y).withWidth(width).withHeight(height));
     }
 };

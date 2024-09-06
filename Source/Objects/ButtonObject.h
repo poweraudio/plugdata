@@ -4,7 +4,7 @@
  // WARRANTIES, see the file, "LICENSE.txt," in this distribution.
  */
 
-class ButtonObject : public ObjectBase {
+class ButtonObject final : public ObjectBase {
 
     bool state = false;
     bool alreadyTriggered = false;
@@ -12,6 +12,14 @@ class ButtonObject : public ObjectBase {
     Value primaryColour = SynchronousValue();
     Value secondaryColour = SynchronousValue();
     Value sizeProperty = SynchronousValue();
+
+    enum Mode {
+        Latch,
+        Toggle,
+        Bang
+    };
+
+    Mode mode;
 
 public:
     ButtonObject(pd::WeakReference obj, Object* parent)
@@ -32,34 +40,66 @@ public:
             primaryColour = Colour(button->x_fgcolor[0], button->x_fgcolor[1], button->x_fgcolor[2]).toString();
             secondaryColour = Colour(button->x_bgcolor[0], button->x_bgcolor[1], button->x_bgcolor[2]).toString();
             sizeProperty = button->x_w;
+            if (button->x_mode == 0) {
+                mode = Latch;
+            } else if (button->x_mode == 1) {
+                mode = Toggle;
+            } else {
+                mode = Bang;
+            }
         }
 
         repaint();
     }
 
-    /* TODO: finish this!
     void toggleObject(Point<int> position) override
     {
+        if (!alreadyTriggered) {
 
-        if (!alreadyBanged) {
+            if (mode == Latch) {
+                state = true;
+            } else if (mode == Toggle) {
+                state = !state;
+            }
 
-            auto* button = ptr.get<t_fake_button>();
-            outlet_float(button->x_obj.ob_outlet, 1);
-            update();
-            alreadyBanged = true;
+            if (mode == Bang) {
+                state = true;
+                if (auto button = ptr.get<t_fake_button>()) {
+                    outlet_bang(button->x_obj.ob_outlet);
+                }
+                Timer::callAfterDelay(250,
+                    [_this = SafePointer(this)]() mutable {
+                        // First check if this object still exists
+                        if (!_this)
+                            return;
+
+                        if (_this->state) {
+                            _this->state = false;
+                            _this->repaint();
+                        }
+                    });
+            } else {
+                if (auto button = ptr.get<t_fake_button>()) {
+                    outlet_float(button->x_obj.ob_outlet, state);
+                }
+            }
+            repaint();
+            alreadyTriggered = true;
         }
     }
     void untoggleObject() override
     {
-
-        if(alreadyBanged)
-        {
-            auto* button = ptr.get<t_fake_button>();
-            outlet_float(button->x_obj.ob_outlet, 0);
-            update();
+        if (alreadyTriggered) {
+            if (mode == Latch) {
+                state = false;
+                if (auto button = ptr.get<t_fake_button>()) {
+                    outlet_float(button->x_obj.ob_outlet, 0);
+                }
+            }
+            repaint();
+            alreadyTriggered = false;
         }
-        alreadyBanged = false;
-    }*/
+    }
 
     Rectangle<int> getPdBounds() override
     {
@@ -104,10 +144,33 @@ public:
         if (!e.mods.isLeftButtonDown())
             return;
 
-        if (auto button = ptr.get<t_fake_button>()) {
-            outlet_float(button->x_obj.ob_outlet, 1);
+        if (mode == Latch) {
+            state = true;
+        } else if (mode == Toggle) {
+            state = !state;
         }
-        state = true;
+
+        if (mode == Bang) {
+            state = true;
+            if (auto button = ptr.get<t_fake_button>()) {
+                outlet_bang(button->x_obj.ob_outlet);
+            }
+            Timer::callAfterDelay(250,
+                [_this = SafePointer(this)]() mutable {
+                    // First check if this object still exists
+                    if (!_this)
+                        return;
+
+                    if (_this->state) {
+                        _this->state = false;
+                        _this->repaint();
+                    }
+                });
+        } else {
+            if (auto button = ptr.get<t_fake_button>()) {
+                outlet_float(button->x_obj.ob_outlet, state);
+            }
+        }
 
         // Make sure we don't re-click with an accidental drag
         alreadyTriggered = true;
@@ -118,32 +181,50 @@ public:
     void mouseUp(MouseEvent const& e) override
     {
         alreadyTriggered = false;
-        state = false;
-        if (auto button = ptr.get<t_fake_button>()) {
-            outlet_float(button->x_obj.ob_outlet, 0);
+        if (mode == Latch) {
+            state = false;
+            if (auto button = ptr.get<t_fake_button>()) {
+                outlet_float(button->x_obj.ob_outlet, 0);
+            }
         }
 
         repaint();
     }
 
-    void paint(Graphics& g) override
+    void render(NVGcontext* nvg) override
     {
-        auto const bounds = getLocalBounds().toFloat();
+        auto b = getLocalBounds().toFloat();
 
-        g.setColour(Colour::fromString(secondaryColour.toString()));
-        g.fillRoundedRectangle(bounds.reduced(0.5f), Corners::objectCornerRadius);
+        auto foregroundColour = convertColour(Colour::fromString(primaryColour.toString()));
+        auto bgColour = Colour::fromString(secondaryColour.toString());
+        
+        auto backgroundColour = convertColour(bgColour);
+        auto selectedOutlineColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectSelectedOutlineColourId));
+        auto outlineColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectOutlineColourId));
+        auto internalLineColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::guiObjectInternalOutlineColour));
 
-        bool selected = object->isSelected() && !cnv->isGraph;
+        nvgDrawRoundedRect(nvg, b.getX(), b.getY(), b.getWidth(), b.getHeight(), backgroundColour, object->isSelected() ? selectedOutlineColour : outlineColour, Corners::objectCornerRadius);
 
-        g.setColour(object->findColour(selected ? PlugDataColour::objectSelectedOutlineColourId : objectOutlineColourId));
-        g.drawRoundedRectangle(bounds.reduced(0.5f), Corners::objectCornerRadius, 1.0f);
+        b = b.reduced(1);
+        auto const width = std::max(b.getWidth(), b.getHeight());
+        auto const sizeReduction = std::min(1.0f, getWidth() / 20.0f);
 
-        g.setColour(object->findColour(PlugDataColour::guiObjectInternalOutlineColour));
-        g.drawRoundedRectangle(bounds.reduced(6), Corners::objectCornerRadius, 1.5f);
+        float const lineOuter = 80.f * (width * 0.01f);
+        float const lineThickness = std::max(width * 0.06f, 1.5f) * sizeReduction;
 
+        auto outerBounds = b.reduced((width - lineOuter) * sizeReduction);
+
+        nvgBeginPath(nvg);
+        nvgRoundedRect(nvg, outerBounds.getX(), outerBounds.getY(), outerBounds.getWidth(), outerBounds.getHeight(), Corners::objectCornerRadius * sizeReduction);
+        nvgStrokeColor(nvg, internalLineColour);
+        nvgStrokeWidth(nvg, lineThickness);
+        nvgStroke(nvg);
+
+        // Fill ellipse if bangState is true
         if (state) {
-            g.setColour(Colour::fromString(primaryColour.toString()));
-            g.fillRoundedRectangle(bounds.reduced(6), Corners::objectCornerRadius);
+            auto innerBounds = b.reduced((width - lineOuter + lineThickness) * sizeReduction);
+            nvgFillColor(nvg, foregroundColour);
+            nvgFillRoundedRect(nvg, innerBounds.getX(), innerBounds.getY(), innerBounds.getWidth(), innerBounds.getHeight(), (Corners::objectCornerRadius - 1) * sizeReduction);
         }
     }
 
@@ -189,6 +270,17 @@ public:
         case hash("fgcolor"): {
             setParameterExcludingListener(primaryColour, Colour(atoms[0].getFloat(), atoms[1].getFloat(), atoms[2].getFloat()).toString());
             repaint();
+            break;
+        }
+        case hash("float"): {
+            state = !approximatelyEqual(atoms[0].getFloat(), 0.0f);
+            repaint();
+            break;
+        }
+        case hash("latch"):
+        case hash("bang"):
+        case hash("toggle"): {
+            update();
             break;
         }
         default:

@@ -4,22 +4,32 @@
  // WARRANTIES, see the file, "LICENSE.txt," in this distribution.
  */
 
+#include <juce_gui_extra/juce_gui_extra.h>
 #include "PluginEditor.h"
 #include "PluginProcessor.h" // TODO: We shouldn't need this!
 #include "Objects/ObjectBase.h"
 #include "Heavy/CompatibleObjects.h"
+#include "Utility/NanoVGGraphicsContext.h"
+#include "Components/BouncingViewport.h"
+
+extern "C" {
+int is_gem_object(char const* sym);
+}
 
 // Component that sits on top of a TextEditor and will draw auto-complete suggestions over it
 class AutoCompleteComponent
     : public Component
+    , public NVGComponent
     , public ComponentListener {
     String suggestion;
     Canvas* cnv;
     Component::SafePointer<TextEditor> editor;
+    std::unique_ptr<NanoVGGraphicsContext> nvgCtx;
 
 public:
     AutoCompleteComponent(TextEditor* e, Canvas* c)
-        : cnv(c)
+        : NVGComponent(this)
+        , cnv(c)
         , editor(e)
     {
         setAlwaysOnTop(true);
@@ -98,6 +108,18 @@ public:
         repaint();
     }
 
+    void render(NVGcontext* nvg) override
+    {
+        NVGScopedState scopedState(nvg);
+        nvgTranslate(nvg, getX(), getY());
+        if (!nvgCtx || nvgCtx->getContext() != nvg)
+            nvgCtx = std::make_unique<NanoVGGraphicsContext>(nvg);
+        Graphics g(*nvgCtx);
+        {
+            paintEntireComponent(g, true);
+        }
+    }
+
 private:
     bool shouldAutocomplete = true;
     String stashedText;
@@ -125,29 +147,36 @@ private:
         auto editorTextWidth = editor->getFont().getStringWidthFloat(editorText);
         auto completionBounds = getLocalBounds().toFloat().withTrimmedLeft(editorTextWidth + 7.5f);
 
-        auto colour = findColour(PlugDataColour::canvasTextColourId).withAlpha(0.65f);
-        Fonts::drawText(g, suggestion, completionBounds, colour);
+        auto colour = findColour(PlugDataColour::canvasTextColourId).withAlpha(0.5f);
+        Fonts::drawText(g, suggestion, completionBounds.translated(-1.25f, -1.25f), colour);
     }
 };
 // Suggestions component that shows up when objects are edited
 class SuggestionComponent : public Component
     , public KeyListener
-    , public TextEditor::Listener
     , public ComponentListener {
 
     class Suggestion : public TextButton {
-        int type = -1;
+
+        enum ObjectType {
+            Data = 0,
+            Signal = 1,
+            Gem = 2
+        };
+
+        ObjectType type;
 
         String objectDescription;
 
     public:
-        Suggestion(SuggestionComponent* parentComponent, int i)
+        Suggestion(SuggestionComponent* parentComponent)
             : parent(parentComponent)
         {
             setText("", "", false);
             setWantsKeyboardFocus(false);
             setConnectedEdges(12);
             setClickingTogglesState(true);
+            setTriggeredOnMouseDown(true);
             setRadioGroupId(hash("suggestion_component"));
             setColour(TextButton::buttonOnColourId, findColour(ScrollBar::thumbColourId));
         }
@@ -156,18 +185,16 @@ class SuggestionComponent : public Component
         {
             objectDescription = description;
             setButtonText(name);
-            type = name.contains("~") ? 1 : 0;
+            type = name.contains("~") ? Signal : Data;
+
+            if (!type && is_gem_object(name.toRawUTF8())) {
+                type = Gem;
+            }
 
             // Argument suggestions don't have icons!
             drawIcon = icon;
 
             repaint();
-        }
-
-        // TODO: why is this necessary?
-        void mouseDown(MouseEvent const& e) override
-        {
-            onClick();
         }
 
         void paint(Graphics& g) override
@@ -179,10 +206,9 @@ class SuggestionComponent : public Component
             auto buttonArea = getLocalBounds().withTrimmedRight((parent->canBeTransparent() ? 42 : 2) + scrollbarIndent).toFloat().reduced(4, 1);
 
             g.setColour(backgroundColour);
-            PlugDataLook::fillSmoothedRectangle(g, buttonArea, Corners::defaultCornerRadius);
+            g.fillRoundedRectangle(buttonArea, Corners::defaultCornerRadius);
 
-            auto colour = getToggleState() ? findColour(PlugDataColour::popupMenuActiveTextColourId) : findColour(PlugDataColour::popupMenuTextColourId);
-
+            auto colour = findColour(PlugDataColour::popupMenuTextColourId);
             auto yIndent = jmin(4, proportionOfHeight(0.3f));
             auto leftIndent = drawIcon ? 32 : 11;
             auto rightIndent = 14;
@@ -201,19 +227,27 @@ class SuggestionComponent : public Component
                 Fonts::drawText(g, String::fromUTF8("  \xe2\x80\x93  ") + objectDescription, Rectangle<int>(leftIndent, yIndent, textWidth, getHeight() - yIndent * 2), colour, 13);
             }
 
-            if (type == -1)
-                return;
-
             if (drawIcon) {
-                auto dataColour = findColour(PlugDataColour::dataColourId);
-                auto signalColour = findColour(PlugDataColour::signalColourId);
-                g.setColour(type ? signalColour : dataColour);
+                Colour iconColour;
+                String iconText;
+                if (type == Data) {
+                    iconColour = findColour(PlugDataColour::dataColourId);
+                    iconText = "pd";
+                } else if (type == Signal) {
+                    iconColour = findColour(PlugDataColour::signalColourId);
+                    iconText = "~";
+                } else if (type == Gem) {
+                    iconColour = findColour(PlugDataColour::gemColourId);
+                    iconText = "g";
+                }
+                g.setColour(iconColour);
+
                 auto iconbound = getLocalBounds().reduced(4);
                 iconbound.setWidth(getHeight() - 8);
                 iconbound.translate(4, 0);
-                PlugDataLook::fillSmoothedRectangle(g, iconbound.toFloat(), Corners::defaultCornerRadius);
+                g.fillRoundedRectangle(iconbound.toFloat(), Corners::defaultCornerRadius);
 
-                Fonts::drawFittedText(g, type ? "~" : "pd", iconbound.reduced(1), Colours::white, 1, 1.0f, type ? 12 : 10, Justification::centred);
+                Fonts::drawFittedText(g, iconText, iconbound.reduced(1), Colours::white, 1, 1.0f, type ? 12 : 10, Justification::centred);
             }
         }
 
@@ -231,7 +265,7 @@ public:
         buttonholder = std::make_unique<Component>();
 
         for (int i = 0; i < 20; i++) {
-            Suggestion* but = buttons.add(new Suggestion(this, i));
+            Suggestion* but = buttons.add(new Suggestion(this));
             buttonholder->addAndMakeVisible(buttons[i]);
 
             but->setClickingTogglesState(true);
@@ -252,6 +286,7 @@ public:
         constrainer.setSizeLimits(150, 120, 500, 400);
         setSize(310 + (2 * windowMargin), 140 + (2 * windowMargin));
 
+        // resizer.setAllowHostManagedResize(false);
         addAndMakeVisible(resizer);
 
         setInterceptsMouseClicks(true, true);
@@ -264,15 +299,20 @@ public:
         buttons.clear();
     }
 
+    void renderAutocompletion(NVGcontext* nvg)
+    {
+        if (autoCompleteComponent)
+            autoCompleteComponent->render(nvg);
+    }
+
     void createCalloutBox(Object* object, TextEditor* editor)
     {
         currentObject = object;
         openedEditor = editor;
 
-        setTransform(object->cnv->editor->getTransform());
+        setTransform(object->editor->getTransform());
 
         editor->addComponentListener(this);
-        editor->addListener(this);
         editor->addKeyListener(this);
 
         autoCompleteComponent = std::make_unique<AutoCompleteComponent>(editor, object->cnv);
@@ -281,14 +321,15 @@ public:
             auto* but = buttons[i];
             but->setAlwaysOnTop(true);
 
-            but->onClick = [this, i, but, editor]() mutable {
+            but->onClick = [this, i, editor]() mutable {
                 // If the button is already selected, perform autocomplete
-                if (but->getToggleState() && autoCompleteComponent) {
+                if (i == currentidx && autoCompleteComponent) {
                     autoCompleteComponent->autocomplete();
-                    return;
+                }
+                else {
+                    move(0, i);
                 }
 
-                move(0, i);
                 if (!editor->isVisible())
                     editor->setVisible(true);
                 editor->grabKeyboardFocus();
@@ -328,6 +369,7 @@ public:
 
     void removeCalloutBox()
     {
+        currentidx = 0;
         setVisible(false);
 
         if (isOnDesktop()) {
@@ -336,7 +378,6 @@ public:
 
         autoCompleteComponent.reset(nullptr);
         if (openedEditor) {
-            openedEditor->removeListener(this);
             openedEditor->removeComponentListener(this);
             openedEditor->removeKeyListener(this);
         }
@@ -371,12 +412,22 @@ public:
         auto* but = buttons[currentidx];
 
         but->setToggleState(true, dontSendNotification);
-
-        if (autoCompleteComponent) {
-            String newText = buttons[currentidx]->getButtonText();
-            autoCompleteComponent->setSuggestion(newText);
+        auto buttonText = but->getButtonText();
+        
+        if (autoCompleteComponent && buttonText.startsWith(openedEditor->getText())) {
+            autoCompleteComponent->setSuggestion(buttonText);
             autoCompleteComponent->enableAutocomplete(true);
             currentObject->updateBounds();
+            resized();
+        }
+        else
+        {
+            openedEditor->setText(buttonText, dontSendNotification);
+            openedEditor->moveCaretToEnd(false);
+            autoCompleteComponent->setSuggestion("");
+            autoCompleteComponent->enableAutocomplete(false);
+            currentObject->updateBounds();
+            resized();
         }
 
         // Auto-scroll item into viewport bounds
@@ -416,6 +467,282 @@ public:
 
         return {};
     }
+    void updateSuggestions(String const& currentText)
+    {
+        if (!currentObject || lastText == currentText) {
+            return;
+        }
+        
+        if(currentidx >= 0 && buttons[currentidx]->getButtonText() == currentText)
+        {
+            if(autoCompleteComponent) autoCompleteComponent->setSuggestion("");
+            return;
+        }
+        
+        lastText = currentText;
+        
+        auto& library = currentObject->cnv->pd->objectLibrary;
+
+        class ObjectSorter {
+        public:
+            ObjectSorter(String searchQuery)
+                : query(searchQuery)
+            {
+            }
+
+            int compareElements(String const& a, String const& b) const
+            {
+                // Check if suggestion exacly matches query
+                if (a == query && b != query) {
+                    return -1;
+                }
+
+                if (b == query && a != query) {
+                    return 1;
+                }
+                
+                // Check if suggestion is equal to query with "~" appended
+                if (a == (query + "~") && b != query && b != (query + "~")) {
+                    return -1;
+                }
+
+                if (b == (query + "~") && a != query && a != (query + "~")) {
+                    return 1;
+                }
+
+                // Check if suggestion is equal to query with "." appended
+                if (a.startsWith(query + ".") && b != query && b != (query + "~") && !b.startsWith(query + ".")) {
+                    return -1;
+                }
+
+                if (b.startsWith(query + ".") && a != query && a != (query + "~") && !a.startsWith(query + ".")) {
+                    return 1;
+                }
+                
+                if(a.startsWith(query) && !b.startsWith(query))
+                {
+                    return -1;
+                }
+                
+                if(b.startsWith(query) && !a.startsWith(query))
+                {
+                    return 1;
+                }
+                
+                return 0;
+            }
+            String const query;
+        };
+
+        auto sortSuggestions = [](String query, StringArray suggestions) -> StringArray {
+            if (query.length() == 0)
+                return suggestions;
+
+            auto sorter = ObjectSorter(query);
+            suggestions.strings.sort(sorter, true);
+            return suggestions;
+        };
+
+        if (currentObject->gui && currentObject->getType(false) == "msg") {
+            auto nearbyMethods = findNearbyMethods(currentText);
+
+            numOptions = std::min<int>(buttons.size(), nearbyMethods.size());
+            for (int i = 0; i < numOptions; i++) {
+                auto [objectName, methodName, description] = nearbyMethods[i];
+
+                buttons[i]->setText(methodName, "(" + objectName + ") " + description, false);
+                buttons[i]->setInterceptsMouseClicks(false, false);
+                buttons[i]->setToggleState(false, dontSendNotification);
+            }
+
+            for (int i = numOptions; i < buttons.size(); i++) {
+                buttons[i]->setText("", "", false);
+                buttons[i]->setToggleState(false, dontSendNotification);
+            }
+
+            setVisible(numOptions);
+
+            // Get length of user-typed text
+            int textlen = openedEditor->getText().length();
+
+            if (nearbyMethods.isEmpty() || textlen == 0) {
+                state = Hidden;
+                if (autoCompleteComponent)
+                    autoCompleteComponent->enableAutocomplete(false);
+                setVisible(false);
+                return;
+            }
+
+            state = ShowingObjects;
+            currentidx = -1;
+
+            if (autoCompleteComponent) {
+                autoCompleteComponent->setSuggestion("");
+            }
+
+            resized();
+            return;
+        }
+
+        // If there's a space, open arguments panel
+        if (currentText.contains(" ")) {
+            state = ShowingArguments;
+            auto name = currentText.upToFirstOccurrenceOf(" ", false, false);
+            auto objectInfo = library->getObjectInfo(name);
+            if (objectInfo.isValid()) {
+                auto found = objectInfo.getChildWithName("arguments").createCopy();
+                for (auto flag : objectInfo.getChildWithName("flags")) {
+                    auto flagCopy = flag.createCopy();
+                    auto name = flagCopy.getProperty("name").toString().trim();
+
+                    if (!name.startsWith("-"))
+                        name = "-" + name;
+
+                    flagCopy.setProperty("type", name, nullptr);
+                    found.appendChild(flagCopy, nullptr);
+                }
+
+                numOptions = std::min<int>(buttons.size(), found.getNumChildren());
+                for (int i = 0; i < numOptions; i++) {
+                    auto type = found.getChild(i).getProperty("type").toString();
+                    auto description = found.getChild(i).getProperty("description").toString();
+                    auto def = found.getChild(i).getProperty("default").toString();
+
+                    if (def.isNotEmpty())
+                        description += " (default: " + def + ")";
+
+                    buttons[i]->setText(type, description, false);
+                    buttons[i]->setInterceptsMouseClicks(false, false);
+                    buttons[i]->setToggleState(false, dontSendNotification);
+                }
+
+                for (int i = numOptions; i < buttons.size(); i++) {
+                    buttons[i]->setText("", "", false);
+                    buttons[i]->setToggleState(false, dontSendNotification);
+                }
+
+                setVisible(numOptions);
+
+                if (autoCompleteComponent) {
+                    autoCompleteComponent->enableAutocomplete(false);
+                }
+
+                return;
+            }
+        }
+
+        if (isPositiveAndBelow(currentidx, buttons.size())) {
+            buttons[currentidx]->setToggleState(true, dontSendNotification);
+        }
+
+        auto filterObjects = [_this = SafePointer(this), &library](StringArray& toFilter) {
+            if (!_this || !_this->currentObject)
+                return;
+            
+            if(!SettingsFile::getInstance()->getLibrariesTree().getChildWithProperty("Name", "Gem").isValid())
+            {
+                StringArray noGemObjects;
+                for (auto& object : toFilter) {
+                    if(object.startsWith("Gem/") || !library->isGemObject(object)) // Don't suggest Gem objects without "Gem/" prefix unless gem library is loaded
+                    {
+                        noGemObjects.add(object);
+                    }
+                }
+                
+                toFilter = noGemObjects;
+            }
+
+            // When hvcc mode is enabled, show only hvcc compatible objects
+            if (_this->currentObject->hvccMode.get()) {
+
+                StringArray hvccObjectsFound;
+                for (auto& object : toFilter) {
+                    // We support arrays, but when you create [array] it is really [array define] which is unsupported
+                    if (HeavyCompatibleObjects::getAllCompatibleObjects().contains(object) && object != "array") {
+                        hvccObjectsFound.add(object);
+                    }
+                }
+                toFilter = hvccObjectsFound;
+            }
+
+            // Remove unhelpful objects
+            for (int i = toFilter.size() - 1; i >= 0; i--) {
+                if (_this->excludeList.contains(toFilter[i])) {
+                    toFilter.remove(i);
+                }
+            }
+        };
+        auto patchDir = currentObject->cnv->patch.getPatchFile().getParentDirectory();
+        if (!patchDir.isDirectory() || patchDir == File::getSpecialLocation(File::tempDirectory))
+            patchDir = File();
+
+        // Update suggestions
+        auto found = library->autocomplete(currentText, patchDir);
+
+        filterObjects(found);
+
+        if (found.isEmpty() || !found[0].startsWith(currentText)) {
+            autoCompleteComponent->enableAutocomplete(false);
+            deselectAll();
+            currentidx = -1;
+        } else {
+            found = sortSuggestions(currentText, found);
+            currentidx = 0;
+            autoCompleteComponent->enableAutocomplete(true);
+        }
+        
+        if (openedEditor) {
+            numOptions = static_cast<int>(found.size());
+
+            // Apply object name and descriptions to buttons
+            for (int i = 0; i < std::min<int>(buttons.size(), numOptions); i++) {
+                auto& name = found[i];
+
+                auto info = library->getObjectInfo(name);
+                auto description = info.isValid() ? info.getProperty("description").toString() : "";
+                buttons[i]->setText(name, description, true);
+
+                buttons[i]->setInterceptsMouseClicks(true, false);
+            }
+
+            for (int i = numOptions; i < buttons.size(); i++)
+                buttons[i]->setText("", "", false);
+
+            resized();
+
+            // Get length of user-typed text
+            int textlen = openedEditor->getText().length();
+
+            if (found.isEmpty() || textlen == 0) {
+                state = Hidden;
+                if (autoCompleteComponent)
+                    autoCompleteComponent->enableAutocomplete(false);
+                setVisible(false);
+                return;
+            }
+
+            // Limit it to minimum of the number of buttons and the number of suggestions
+            int numButtons = std::min(20, numOptions);
+
+            setVisible(true);
+
+            state = ShowingObjects;
+
+            if (currentidx < 0)
+                return;
+
+            currentidx = (currentidx + numButtons) % numButtons;
+
+            // Retrieve best suggestion
+            auto const& fullName = found[currentidx];
+
+            if (fullName.length() > textlen && autoCompleteComponent) {
+                autoCompleteComponent->setSuggestion(fullName);
+            } else if (autoCompleteComponent) {
+                autoCompleteComponent->setSuggestion("");
+            }
+        }
+    }
 
 private:
     void mouseDown(MouseEvent const& e) override
@@ -447,13 +774,13 @@ private:
         }
 
         g.setColour(findColour(PlugDataColour::popupMenuBackgroundColourId));
-        PlugDataLook::fillSmoothedRectangle(g, port->getBounds().reduced(1).toFloat(), Corners::defaultCornerRadius);
+        g.fillRoundedRectangle(port->getBounds().reduced(1).toFloat(), Corners::defaultCornerRadius);
     }
 
     void paintOverChildren(Graphics& g) override
     {
         g.setColour(findColour(PlugDataColour::outlineColourId).darker(0.1f));
-        PlugDataLook::drawSmoothedRectangle(g, PathStrokeType(1.0f), port->getBounds().reduced(1).toFloat(), Corners::defaultCornerRadius);
+        g.drawRoundedRectangle(port->getBounds().reduced(1).toFloat(), Corners::defaultCornerRadius, 1.0f);
     }
 
     bool keyPressed(KeyPress const& key, Component* originatingComponent) override
@@ -461,20 +788,11 @@ private:
         if (!currentObject) {
             return false;
         }
-
-        if (key == KeyPress::rightKey && !openedEditor->getHighlightedRegion().isEmpty()) {
-            openedEditor->setCaretPosition(openedEditor->getHighlightedRegion().getEnd());
-            return true;
-        }
-        if (key == KeyPress::rightKey && autoCompleteComponent && openedEditor->getCaretPosition() == openedEditor->getText().length()) {
+        if (openedEditor->getHighlightedRegion().isEmpty() && key == KeyPress::rightKey && autoCompleteComponent && autoCompleteComponent->isAutocompleting() && openedEditor->getCaretPosition() == openedEditor->getText().length()) {
             autoCompleteComponent->autocomplete();
             currentidx = 0;
             if (buttons.size())
                 buttons[0]->setToggleState(true, dontSendNotification);
-            return true;
-        }
-        if (key == KeyPress::leftKey && !openedEditor->getHighlightedRegion().isEmpty()) {
-            openedEditor->setCaretPosition(openedEditor->getHighlightedRegion().getStart());
             return true;
         }
         if (key == KeyPress::tabKey && autoCompleteComponent->isAutocompleting() && openedEditor->getText() != autoCompleteComponent->getSuggestion() && numOptions != 0) {
@@ -507,286 +825,6 @@ private:
         return false;
     }
 
-    void textEditorTextChanged(TextEditor& e) override
-    {
-        if (!currentObject)
-            return;
-
-        String currentText = e.getText();
-        resized();
-
-        auto& library = currentObject->cnv->pd->objectLibrary;
-
-        class ObjectSorter {
-        public:
-            ObjectSorter(String searchQuery)
-                : query(searchQuery)
-            {
-            }
-
-            int compareElements(String const& a, String const& b)
-            {
-                // Check if suggestion exacly matches query
-                if (a == query) {
-                    return -1;
-                }
-
-                if (b == query) {
-                    return 1;
-                }
-
-                // Check if suggestion is equal to query with "~" appended
-                if (a == (query + "~") && b != query && b != (query + "~")) {
-                    return -1;
-                }
-
-                if (b == (query + "~") && a != query && a != (query + "~")) {
-                    return 1;
-                }
-
-                // Check if suggestion is equal to query with "." appended
-                if (a.startsWith(query + ".") && b != query && b != (query + "~") && !b.startsWith(query + ".")) {
-                    return -1;
-                }
-
-                if (b.startsWith(query + ".") && a != query && a != (query + "~") && !a.startsWith(query + ".")) {
-                    return 1;
-                }
-
-                if (a.length() < b.length()) {
-                    return -1;
-                }
-
-                if (b.length() < a.length()) {
-                    return 1;
-                }
-
-                return a.compareNatural(b);
-            }
-            String const query;
-        };
-
-        auto sortSuggestions = [](String query, StringArray suggestions) -> StringArray {
-            if (query.length() == 0)
-                return suggestions;
-
-            auto sorter = ObjectSorter(query);
-            suggestions.strings.sort(sorter);
-            return suggestions;
-        };
-
-        if (currentObject->gui && currentObject->gui->getType() == "message") {
-            auto nearbyMethods = findNearbyMethods(currentText);
-
-            numOptions = std::min<int>(buttons.size(), nearbyMethods.size());
-            for (int i = 0; i < numOptions; i++) {
-                auto [objectName, methodName, description] = nearbyMethods[i];
-
-                buttons[i]->setText(methodName, "(" + objectName + ") " + description, false);
-                buttons[i]->setInterceptsMouseClicks(false, false);
-                buttons[i]->setToggleState(false, dontSendNotification);
-            }
-
-            for (int i = numOptions; i < buttons.size(); i++) {
-                buttons[i]->setText("", "", false);
-                buttons[i]->setToggleState(false, dontSendNotification);
-            }
-
-            setVisible(numOptions);
-
-            // Get length of user-typed text
-            int textlen = openedEditor->getText().length();
-
-            if (nearbyMethods.isEmpty() || textlen == 0) {
-                state = Hidden;
-                if (autoCompleteComponent)
-                    autoCompleteComponent->enableAutocomplete(false);
-                currentObject->updateBounds();
-                setVisible(false);
-                return;
-            }
-
-            state = ShowingObjects;
-            currentidx = -1;
-
-            if (autoCompleteComponent) {
-                autoCompleteComponent->setSuggestion("");
-                currentObject->updateBounds();
-            }
-
-            resized();
-            return;
-        }
-
-        // If there's a space, open arguments panel
-        if (currentText.contains(" ")) {
-            state = ShowingArguments;
-            auto name = currentText.upToFirstOccurrenceOf(" ", false, false);
-            auto objectInfo = library->getObjectInfo(name);
-            auto found = objectInfo.getChildWithName("arguments").createCopy();
-            for (auto flag : objectInfo.getChildWithName("flags")) {
-                auto flagCopy = flag.createCopy();
-                auto name = flagCopy.getProperty("name").toString().trim();
-
-                if (!name.startsWith("-"))
-                    name = "-" + name;
-
-                flagCopy.setProperty("type", name, nullptr);
-                found.appendChild(flagCopy, nullptr);
-            }
-
-            numOptions = std::min<int>(buttons.size(), found.getNumChildren());
-            for (int i = 0; i < numOptions; i++) {
-                auto type = found.getChild(i).getProperty("type").toString();
-                auto description = found.getChild(i).getProperty("description").toString();
-                auto def = found.getChild(i).getProperty("default").toString();
-
-                if (def.isNotEmpty())
-                    description += " (default: " + def + ")";
-
-                buttons[i]->setText(type, description, false);
-                buttons[i]->setInterceptsMouseClicks(false, false);
-                buttons[i]->setToggleState(false, dontSendNotification);
-            }
-
-            for (int i = numOptions; i < buttons.size(); i++) {
-                buttons[i]->setText("", "", false);
-                buttons[i]->setToggleState(false, dontSendNotification);
-            }
-
-            setVisible(numOptions);
-
-            if (autoCompleteComponent) {
-                autoCompleteComponent->enableAutocomplete(false);
-                currentObject->updateBounds();
-            }
-
-            resized();
-
-            return;
-        }
-
-        if (isPositiveAndBelow(currentidx, buttons.size())) {
-            buttons[currentidx]->setToggleState(true, dontSendNotification);
-        }
-
-        auto filterObjects = [_this = SafePointer(this)](StringArray& toFilter) {
-            if (!_this || !_this->currentObject)
-                return;
-
-            // When hvcc mode is enabled, show only hvcc compatible objects
-            if (getValue<bool>(_this->currentObject->cnv->editor->hvccMode)) {
-
-                StringArray hvccObjectsFound;
-                for (auto& object : toFilter) {
-                    // We support arrays, but when you create [array] it is really [array define] which is unsupported
-                    if (HeavyCompatibleObjects::getAllCompatibleObjects().contains(object) && object != "array") {
-                        hvccObjectsFound.add(object);
-                    }
-                }
-
-                toFilter = hvccObjectsFound;
-            }
-
-            // Remove unhelpful objects
-            for (int i = toFilter.size() - 1; i >= 0; i--) {
-                if (_this->excludeList.contains(toFilter[i])) {
-                    toFilter.remove(i);
-                }
-            }
-        };
-        auto patchDir = currentObject->cnv->patch.getPatchFile().getParentDirectory();
-        if (!patchDir.isDirectory() || patchDir == File::getSpecialLocation(File::tempDirectory))
-            patchDir = File();
-
-        // Update suggestions
-        auto found = library->autocomplete(currentText, patchDir);
-
-        filterObjects(found);
-
-        if (found.isEmpty()) {
-            autoCompleteComponent->enableAutocomplete(false);
-            deselectAll();
-            currentidx = -1;
-        } else {
-            found = sortSuggestions(currentText, found);
-            currentidx = 0;
-            autoCompleteComponent->enableAutocomplete(true);
-        }
-
-        auto applySuggestionsToButtons = [this, &library](StringArray& suggestions, String originalQuery) {
-            numOptions = static_cast<int>(suggestions.size());
-
-            // Apply object name and descriptions to buttons
-            for (int i = 0; i < std::min<int>(buttons.size(), numOptions); i++) {
-                auto& name = suggestions[i];
-
-                auto description = library->getObjectInfo(name).getProperty("description").toString();
-                buttons[i]->setText(name, description, true);
-
-                buttons[i]->setInterceptsMouseClicks(true, false);
-            }
-
-            for (int i = numOptions; i < buttons.size(); i++)
-                buttons[i]->setText("", "", false);
-
-            resized();
-
-            // Get length of user-typed text
-            int textlen = openedEditor->getText().length();
-
-            if (suggestions.isEmpty() || textlen == 0) {
-                state = Hidden;
-                if (autoCompleteComponent)
-                    autoCompleteComponent->enableAutocomplete(false);
-                currentObject->updateBounds();
-                setVisible(false);
-                return;
-            }
-
-            // Limit it to minimum of the number of buttons and the number of suggestions
-            int numButtons = std::min(20, numOptions);
-
-            // duplicate call to updateBounds :( do we need this?t
-            currentObject->updateBounds();
-
-            setVisible(true);
-
-            state = ShowingObjects;
-
-            if (currentidx < 0)
-                return;
-
-            currentidx = (currentidx + numButtons) % numButtons;
-
-            // Retrieve best suggestion
-            auto const& fullName = suggestions[currentidx];
-
-            if (fullName.length() > textlen && autoCompleteComponent) {
-                autoCompleteComponent->setSuggestion(fullName);
-            } else if (autoCompleteComponent) {
-                autoCompleteComponent->setSuggestion("");
-            }
-        };
-
-        if (openedEditor) {
-            applySuggestionsToButtons(found, currentText);
-        }
-
-        library->getExtraSuggestions(found.size(), currentText, [this, filterObjects, applySuggestionsToButtons, found, currentText](StringArray s) mutable {
-            filterObjects(s);
-
-            // This means the extra suggestions have returned too late to still be relevant
-            if (!openedEditor || currentText != openedEditor->getText())
-                return;
-
-            found.addArray(s);
-            found.removeDuplicates(false);
-
-            applySuggestionsToButtons(found, currentText);
-        });
-    }
-
     Array<std::tuple<String, String, String>> findNearbyMethods(String const& toSearch)
     {
         Array<std::tuple<String, ValueTree, int>> objects;
@@ -796,7 +834,7 @@ private:
             if (!obj->getPointer() || obj == currentObject || distance > 300)
                 continue;
 
-            auto objectName = obj->gui->getType();
+            auto objectName = obj->getType();
             auto alreadyExists = std::find_if(objects.begin(), objects.end(), [objectName](auto const& toCompare) {
                 return std::get<0>(toCompare) == objectName;
             }) != objects.end();
@@ -805,8 +843,10 @@ private:
                 continue;
 
             auto info = cnv->pd->objectLibrary->getObjectInfo(objectName);
-            auto methods = info.getChildWithName("methods");
-            objects.add({ objectName, methods, distance });
+            if (info.isValid()) {
+                auto methods = info.getChildWithName("methods");
+                objects.add({ objectName, methods, distance });
+            }
         }
 
         // Sort by distance
@@ -892,6 +932,7 @@ private:
 
     SafePointer<TextEditor> openedEditor = nullptr;
     SafePointer<Object> currentObject = nullptr;
+    String lastText;
 
     StringArray excludeList = {
         "number~", // appears before numbox~ alphabetically, but is worse in every way
@@ -912,6 +953,7 @@ private:
         "osc.mc-unit",
         "All_objects",
         "All_about_else",
+        "All_about_cyclone",
         "README.deken",
         "else-meta",
         "resonbank.unit",
@@ -935,7 +977,9 @@ private:
         "out.mc.hip~",
         "pvoc~",
         "gran~",
-        "convpartition"
+        "convpartition",
+        "else",
+        "cyclone"
     };
 
     int windowMargin;

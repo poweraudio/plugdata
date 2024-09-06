@@ -17,6 +17,11 @@ class SymbolAtomObject final : public ObjectBase
 
     Label input;
 
+    NVGcolor backgroundColour;
+    NVGcolor selectedOutlineColour;
+    Colour selCol;
+    NVGcolor outlineColour;
+
 public:
     SymbolAtomObject(pd::WeakReference obj, Object* parent)
         : ObjectBase(obj, parent)
@@ -30,7 +35,7 @@ public:
 
         input.onTextChange = [this]() {
             startEdition();
-            setSymbol(input.getText().toStdString());
+            setSymbol(input.getText(true).toStdString());
             stopEdition();
         };
 
@@ -46,6 +51,7 @@ public:
                     object->updateBounds();
                 }
             };
+            repaint();
         };
 
         input.setMinimumHorizontalScale(0.9f);
@@ -54,7 +60,22 @@ public:
         atomHelper.addAtomParameters(objectParameters);
         lookAndFeelChanged();
     }
+           
+    void focusGained(FocusChangeType cause) override
+    {
+        repaint();
+    }
 
+    void focusLost(FocusChangeType cause) override
+    {
+        repaint();
+    }
+
+    void focusOfChildComponentChanged(FocusChangeType cause) override
+    {
+        repaint();
+    }
+    
     void update() override
     {
         sizeProperty = atomHelper.getWidthInChars();
@@ -124,61 +145,48 @@ public:
 
     void lookAndFeelChanged() override
     {
-        input.setColour(Label::textWhenEditingColourId, object->findColour(PlugDataColour::canvasTextColourId));
-        input.setColour(Label::textColourId, object->findColour(PlugDataColour::canvasTextColourId));
-        input.setColour(TextEditor::textColourId, object->findColour(PlugDataColour::canvasTextColourId));
+        input.setColour(Label::textWhenEditingColourId, cnv->editor->getLookAndFeel().findColour(PlugDataColour::canvasTextColourId));
+        input.setColour(Label::textColourId, cnv->editor->getLookAndFeel().findColour(PlugDataColour::canvasTextColourId));
+        input.setColour(TextEditor::textColourId, cnv->editor->getLookAndFeel().findColour(PlugDataColour::canvasTextColourId));
+
+        backgroundColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::guiObjectBackgroundColourId));
+        selCol = cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectSelectedOutlineColourId);
+        selectedOutlineColour = convertColour(selCol);
+        outlineColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectOutlineColourId));
+        
         repaint();
     }
 
-    void paint(Graphics& g) override
+    void render(NVGcontext* nvg) override
     {
-        g.setColour(object->findColour(PlugDataColour::guiObjectBackgroundColourId));
-        g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), Corners::objectCornerRadius);
+        auto b = getLocalBounds().toFloat();
+        auto sb = b.reduced(0.5f); // reduce size of background to stop AA edges from showing through
+
+        // Background
+        nvgDrawRoundedRect(nvg, sb.getX(), sb.getY(), sb.getWidth(), sb.getHeight(), backgroundColour, backgroundColour, Corners::objectCornerRadius);
+
+        imageRenderer.renderJUCEComponent(nvg, input, getImageScale());
+
+        // draw flag
+        bool highlighted = hasKeyboardFocus(true) && ::getValue<bool>(object->locked);
+        atomHelper.drawTriangleFlag(nvg, highlighted);
+
+        nvgDrawRoundedRect(nvg, b.getX(), b.getY(), b.getWidth(), b.getHeight(), nvgRGBAf(0, 0, 0, 0), (object->isSelected() || highlighted) ? selectedOutlineColour : outlineColour, Corners::objectCornerRadius);
     }
 
-    void paintOverChildren(Graphics& g) override
-    {
-        g.setColour(object->findColour(PlugDataColour::guiObjectInternalOutlineColour));
-        Path triangle;
-        triangle.addTriangle(Point<float>(getWidth() - 8, 0), Point<float>(getWidth(), 0), Point<float>(getWidth(), 8));
-
-        auto reducedBounds = getLocalBounds().toFloat().reduced(0.5f);
-
-        Path roundEdgeClipping;
-        roundEdgeClipping.addRoundedRectangle(reducedBounds, Corners::objectCornerRadius);
-
-        g.saveState();
-        g.reduceClipRegion(roundEdgeClipping);
-        g.fillPath(triangle);
-        g.restoreState();
-
-        bool selected = object->isSelected() && !cnv->isGraph;
-        auto outlineColour = object->findColour(selected ? PlugDataColour::objectSelectedOutlineColourId : objectOutlineColourId);
-
-        g.setColour(outlineColour);
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), Corners::objectCornerRadius, 1.0f);
-
-        bool highlighed = hasKeyboardFocus(true) && getValue<bool>(object->locked);
-
-        if (highlighed) {
-            g.setColour(object->findColour(PlugDataColour::objectSelectedOutlineColourId));
-            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), Corners::objectCornerRadius, 2.0f);
-        }
-    }
-
-    bool hideInlets() override
+    bool inletIsSymbol() override
     {
         return atomHelper.hasReceiveSymbol();
     }
 
-    bool hideOutlets() override
+    bool outletIsSymbol() override
     {
         return atomHelper.hasSendSymbol();
     }
 
     void updateLabel() override
     {
-        atomHelper.updateLabel(label);
+        atomHelper.updateLabel(labels);
     }
 
     void valueChanged(Value& v) override
@@ -200,10 +208,19 @@ public:
     {
         if (key == KeyPress::rightKey) {
             if (auto* editor = input.getCurrentTextEditor()) {
-                editor->setCaretPosition(editor->getHighlightedRegion().getEnd());
-                return true;
+                if(editor->getHighlightedRegion().getLength()) {
+                    editor->setCaretPosition(editor->getHighlightedRegion().getEnd());
+                    return true;
+                }
             }
         }
+        else if(key.getKeyCode() == KeyPress::returnKey)
+        {
+            setSymbol(input.getText(true).toStdString());
+            cnv->grabKeyboardFocus();
+            return true;
+        }
+        
         return false;
     }
 
