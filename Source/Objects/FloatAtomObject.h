@@ -17,6 +17,11 @@ class FloatAtomObject final : public ObjectBase {
 
     float value = 0.0f;
 
+    NVGcolor backgroundColour;
+    NVGcolor selectedOutlineColour;
+    Colour selCol;
+    NVGcolor outlineColour;
+
 public:
     FloatAtomObject(pd::WeakReference obj, Object* parent)
         : ObjectBase(obj, parent)
@@ -28,12 +33,9 @@ public:
 
             startEdition();
 
-            editor->setBorder({ 0, 1, 3, 0 });
+            editor->setBorder({ 0, -2, 3, 0 });
             editor->setColour(TextEditor::focusedOutlineColourId, Colours::transparentBlack);
-
-            if (editor != nullptr) {
-                editor->setInputRestrictions(0, ".-0123456789");
-            }
+            editor->setInputRestrictions(0, ".-0123456789");
         };
 
         input.onEditorHide = [this]() {
@@ -72,12 +74,19 @@ public:
         objectParameters.addParamFloat("Maximum", cGeneral, &max);
         atomHelper.addAtomParameters(objectParameters);
 
+        input.setBorderSize(BorderSize<int>(1, 2, 1, 0));
+
         input.setResetValue(0.0f);
+        input.setShowEllipsesIfTooLong(false);
+
         lookAndFeelChanged();
     }
 
     void update() override
     {
+        if (input.isShowing())
+            return;
+
         value = getValue();
 
         min = atomHelper.getMinimum();
@@ -98,6 +107,19 @@ public:
         setPdBounds(object->getObjectBounds());
         setParameterExcludingListener(sizeProperty, atomHelper.getWidthInChars());
     }
+    
+    bool keyPressed(KeyPress const& key) override
+    {
+        if(key.getKeyCode() == KeyPress::returnKey)
+        {
+            auto inputValue = input.getText().getFloatValue();
+            sendFloatValue(inputValue);
+            cnv->grabKeyboardFocus();
+            return true;
+        }
+        
+        return false;
+    }
 
     void focusGained(FocusChangeType cause) override
     {
@@ -114,33 +136,33 @@ public:
         repaint();
     }
 
-    bool hideInlets() override
+    bool inletIsSymbol() override
     {
         return atomHelper.hasReceiveSymbol();
     }
 
-    bool hideOutlets() override
+    bool outletIsSymbol() override
     {
         return atomHelper.hasSendSymbol();
     }
 
     void lookAndFeelChanged() override
     {
-        input.setColour(Label::textWhenEditingColourId, object->findColour(PlugDataColour::canvasTextColourId));
-        input.setColour(Label::textColourId, object->findColour(PlugDataColour::canvasTextColourId));
-        input.setColour(TextEditor::textColourId, object->findColour(PlugDataColour::canvasTextColourId));
-        repaint();
-    }
+        input.setColour(Label::textWhenEditingColourId, cnv->editor->getLookAndFeel().findColour(PlugDataColour::canvasTextColourId));
+        input.setColour(Label::textColourId, cnv->editor->getLookAndFeel().findColour(PlugDataColour::canvasTextColourId));
+        input.setColour(TextEditor::textColourId, cnv->editor->getLookAndFeel().findColour(PlugDataColour::canvasTextColourId));
 
-    void paint(Graphics& g) override
-    {
-        g.setColour(object->findColour(PlugDataColour::guiObjectBackgroundColourId));
-        g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), Corners::objectCornerRadius);
+        backgroundColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::guiObjectBackgroundColourId));
+        selCol = cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectSelectedOutlineColourId);
+        selectedOutlineColour = convertColour(selCol);
+        outlineColour = convertColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectOutlineColourId));
+
+        repaint();
     }
 
     void paintOverChildren(Graphics& g) override
     {
-        g.setColour(object->findColour(PlugDataColour::guiObjectInternalOutlineColour));
+        g.setColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::guiObjectInternalOutlineColour));
         Path triangle;
         triangle.addTriangle(Point<float>(getWidth() - 8, 0), Point<float>(getWidth(), 0), Point<float>(getWidth(), 8));
 
@@ -155,7 +177,7 @@ public:
         g.restoreState();
 
         bool selected = object->isSelected() && !cnv->isGraph;
-        auto outlineColour = object->findColour(selected ? PlugDataColour::objectSelectedOutlineColourId : objectOutlineColourId);
+        auto outlineColour = cnv->editor->getLookAndFeel().findColour(selected ? PlugDataColour::objectSelectedOutlineColourId : objectOutlineColourId);
 
         g.setColour(outlineColour);
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), Corners::objectCornerRadius, 1.0f);
@@ -163,19 +185,35 @@ public:
         bool highlighed = hasKeyboardFocus(true) && ::getValue<bool>(object->locked);
 
         if (highlighed) {
-            g.setColour(object->findColour(PlugDataColour::objectSelectedOutlineColourId));
+            g.setColour(cnv->editor->getLookAndFeel().findColour(PlugDataColour::objectSelectedOutlineColourId));
             g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), Corners::objectCornerRadius, 2.0f);
         }
     }
 
+    void render(NVGcontext* nvg) override
+    {
+        auto b = getLocalBounds().toFloat();
+        auto sb = b.reduced(0.5f);
+
+        nvgDrawRoundedRect(nvg, sb.getX(), sb.getY(), sb.getWidth(), sb.getHeight(), backgroundColour, backgroundColour, Corners::objectCornerRadius);
+
+        input.render(nvg);
+
+        // draw flag
+        bool active = hasKeyboardFocus(true) && ::getValue<bool>(object->locked);
+        atomHelper.drawTriangleFlag(nvg, active);
+
+        nvgDrawRoundedRect(nvg, b.getX(), b.getY(), b.getWidth(), b.getHeight(), nvgRGBAf(0, 0, 0, 0), (active || object->isSelected()) ? selectedOutlineColour : outlineColour, Corners::objectCornerRadius);
+    }
+
     void updateLabel() override
     {
-        atomHelper.updateLabel(label);
+        atomHelper.updateLabel(labels);
     }
 
     Rectangle<int> getPdBounds() override
     {
-        return atomHelper.getPdBounds(input.getFont().getStringWidth(DraggableNumber::formatNumber(input.getText(true).getDoubleValue())));
+        return atomHelper.getPdBounds(input.getFont().getStringWidth(input.formatNumber(input.getText(true).getDoubleValue())));
     }
 
     void setPdBounds(Rectangle<int> b) override

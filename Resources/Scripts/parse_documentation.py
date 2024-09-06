@@ -3,6 +3,7 @@
 #     By doing this at compile time, we can save having to parse all the docs on startup
 
 import os
+import sys
 import xml.etree.cElementTree as ET
 
 # Write n bytes from a number
@@ -201,6 +202,7 @@ def markdownToXml(root, md):
     arguments = ET.SubElement(object, "arguments")
     methods = ET.SubElement(object, "methods")
     flags = ET.SubElement(object, "flags")
+    #print(title)
 
     if "methods" in sections:
       for section in sectionsFromHyphens(sections["methods"]):
@@ -231,7 +233,7 @@ def markdownToXml(root, md):
         desc = sectionMap["description"] if "description" in sectionMap else ""
         ET.SubElement(flags, "flag", name=sectionMap["name"], description=desc)
 
-    numbers = { "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "nth" };
+    numbers = { "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th", "nth" };
 
     if "inlets" in sections:
       inletSections = getSections(sections["inlets"], numbers)
@@ -242,8 +244,12 @@ def markdownToXml(root, md):
         inlet = ET.Element("inlet", variable=isVariable)
         for argument in sectionsFromHyphens(inletSections[section]):
           typeAndDescription = getSections(argument, { "type", "description" })
-          tip += "(" + typeAndDescription["type"] + ") " + typeAndDescription["description"] + "\n"
-          ET.SubElement(inlet, "message", type=typeAndDescription["type"], description=typeAndDescription["description"])
+          tip += "(" + typeAndDescription["type"] + ") "
+          description = ""
+          if "description" in typeAndDescription:
+           tip += typeAndDescription["description"] + "\n"
+           description = typeAndDescription["description"]
+          ET.SubElement(inlet, "message", type=typeAndDescription["type"], description=description)
         inlet.set("tooltip", tip.strip())
         iolets.append(inlet)
 
@@ -256,8 +262,12 @@ def markdownToXml(root, md):
         outlet = ET.Element("outlet", variable=isVariable)
         for argument in sectionsFromHyphens(outletSections[section]):
           typeAndDescription = getSections(argument, { "type", "description" })
-          tip += "(" + typeAndDescription["type"] + ") " + typeAndDescription["description"] + "\n"
-          ET.SubElement(outlet, "message", type=typeAndDescription["type"], description=typeAndDescription["description"])
+          tip += "(" + typeAndDescription["type"] + ") "
+          description = ""
+          if "description" in typeAndDescription:
+           tip += typeAndDescription["description"] + "\n"
+           description = typeAndDescription["description"]
+          ET.SubElement(outlet, "message", type=typeAndDescription["type"], description=description)
         outlet.set("tooltip", tip.strip())
         iolets.append(outlet)
 
@@ -288,7 +298,8 @@ def parseFilesInDir(dir, generateXml, generateWebsite):
     for child in root:
       prepareDocsForWebpage(child)
 
-  with open("../Documentation.bin", "wb") as binaryFile:
+  output_dir = sys.argv[1]
+  with open(output_dir + "/Documentation.bin", "wb") as binaryFile:
     # Write bytes to file
     binaryFile.write(stream)
 

@@ -6,6 +6,15 @@
 
 #pragma once
 
+#include <nanovg.h>
+#if NANOVG_GL_IMPLEMENTATION
+#    include <juce_opengl/juce_opengl.h>
+using namespace juce::gl;
+#    undef NANOVG_GL_IMPLEMENTATION
+#    include <nanovg_gl_utils.h>
+#    define NANOVG_GL_IMPLEMENTATION 1
+#endif
+
 #include "ObjectGrid.h"          // move to impl
 #include "Utility/RateReducer.h" // move to impl
 #include "Utility/ModifierKeyListener.h"
@@ -14,6 +23,8 @@
 #include "Pd/Patch.h"
 #include "Constants.h"
 #include "Objects/ObjectParameters.h"
+#include "NVGSurface.h"
+#include "Utility/GlobalMouseListener.h"
 
 namespace pd {
 class Patch;
@@ -35,10 +46,14 @@ struct ObjectDragState {
     bool didStartDragging = false;
     bool wasSelectedOnMouseDown = false;
     bool wasResized = false;
+    bool wasDuplicated = false;
     Point<int> canvasDragStartPosition = { 0, 0 };
     Component::SafePointer<Object> componentBeingDragged;
     Component::SafePointer<Object> objectSnappingInbetween;
     Component::SafePointer<Connection> connectionToSnapInbetween;
+    
+    Point<int> duplicateOffset = {0, 0};
+    Point<int> lastDuplicateOffset = {0, 0};
 };
 
 class Canvas : public Component
@@ -47,7 +62,8 @@ class Canvas : public Component
     , public LassoSource<WeakReference<Component>>
     , public ModifierKeyListener
     , public pd::MessageListener
-    , public AsyncUpdater {
+    , public AsyncUpdater
+    , public NVGComponent {
 public:
     Canvas(PluginEditor* parent, pd::Patch::Ptr patch, Component* parentGraph = nullptr);
 
@@ -56,15 +72,13 @@ public:
     PluginEditor* editor;
     PluginProcessor* pd;
 
-    void lookAndFeelChanged() override;
-    void paint(Graphics& g) override;
-
     void mouseDown(MouseEvent const& e) override;
     void mouseDrag(MouseEvent const& e) override;
     void mouseUp(MouseEvent const& e) override;
+    bool hitTest(int x, int y) override;
 
     void commandKeyChanged(bool isHeld) override;
-    void spaceKeyChanged(bool isHeld) override;
+    void shiftKeyChanged(bool isHeld) override;
     void middleMouseChanged(bool isHeld) override;
     void altKeyChanged(bool isHeld) override;
 
@@ -73,23 +87,36 @@ public:
     void focusGained(FocusChangeType cause) override;
     void focusLost(FocusChangeType cause) override;
 
+    bool updateFramebuffers(NVGcontext* nvg, Rectangle<int> invalidRegion, int maxUpdateTimeMs);
+    void performRender(NVGcontext* nvg, Rectangle<int> invalidRegion);
+
+    void resized() override;
+
+    void renderAllObjects(NVGcontext* nvg, Rectangle<int> area);
+    void renderAllConnections(NVGcontext* nvg, Rectangle<int> area);
+
     int getOverlays() const;
     void updateOverlays();
 
+    bool shouldShowObjectActivity();
+    bool shouldShowIndex();
+    bool shouldShowConnectionDirection();
+    bool shouldShowConnectionActivity();
+
+    void save(std::function<void()> const& nestedCallback = []() {});
+    void saveAs(std::function<void()> const& nestedCallback = []() {});
+
+    void synchroniseAllCanvases();
     void synchroniseSplitCanvas();
     void synchronise();
     void performSynchronise();
     void handleAsyncUpdate() override;
-
-    void moveToWindow(PluginEditor* newWindow);
 
     void updateDrawables();
 
     bool keyPressed(KeyPress const& key) override;
     void valueChanged(Value& v) override;
 
-    TabComponent* getTabbar();
-    int getTabIndex();
     void tabChanged();
 
     void hideAllActiveEditors();
@@ -102,10 +129,11 @@ public:
     void duplicateSelection();
 
     void encapsulateSelection();
-
-    bool canConnectSelectedObjects();
-    bool connectSelectedObjects();
-
+    void triggerizeSelection();
+    void cycleSelection();
+    void connectSelection();
+    void tidySelection();
+        
     void cancelConnectionCreation();
 
     void alignObjects(Align alignment);
@@ -114,7 +142,14 @@ public:
     void redo();
 
     void jumpToOrigin();
+    void restoreViewportState();
+    void saveViewportState();
+
     void zoomToFitAll();
+
+    void updatePatchSnapshot();
+
+    float getRenderScale() const;
 
     bool autoscroll(MouseEvent const& e);
 
@@ -127,14 +162,18 @@ public:
     bool checkPanDragMode();
     bool setPanDragMode(bool shouldPan);
 
+    bool isPointOutsidePluginArea(Point<int> point);
+
     void findLassoItemsInArea(Array<WeakReference<Component>>& itemsFound, Rectangle<int> const& area) override;
 
     void updateSidebarSelection();
 
+    void orderConnections();
+
     void showSuggestions(Object* object, TextEditor* textEditor);
     void hideSuggestions();
 
-    static bool panningModifierDown();
+    bool panningModifierDown();
 
     ObjectParameters& getInspectorParameters();
 
@@ -174,16 +213,22 @@ public:
     Value locked = SynchronousValue();
     Value commandLocked;
     Value presentationMode;
-    Value showDirection;
-    Value altMode;
 
     bool showOrigin = false;
     bool showBorder = false;
+    bool showConnectionOrder = false;
+    bool connectionsBehind = true;
+    bool showObjectActivity = false;
+    bool showIndex = false;
+
+    bool showConnectionDirection = false;
+    bool showConnectionActivity = false;
+
+    bool isZooming = false;
 
     bool isGraph = false;
-    bool hasParentCanvas = false;
     bool isDraggingLasso = false;
-    
+
     bool needsSearchUpdate = false;
 
     Value isGraphChild = SynchronousValue(var(false));
@@ -198,7 +243,6 @@ public:
     ObjectGrid objectGrid = ObjectGrid(this);
 
     Point<int> const canvasOrigin;
-    Point<int> viewportPositionBeforeMiddleDrag = { 0, 0 };
 
     std::unique_ptr<GraphArea> graphArea;
 
@@ -215,7 +259,25 @@ public:
 
     inline static constexpr int infiniteCanvasSize = 128000;
 
+    Component objectLayer;
+    Component connectionLayer;
+
+    NVGFramebuffer ioletBuffer;
+    NVGImage resizeHandleImage;
+    NVGImage resizeGOPHandleImage;
+    NVGImage presentationShadowImage;
+
+    NVGImage objectFlag;
+    NVGImage objectFlagSelected;
+
+    Array<juce::WeakReference<NVGComponent>> drawables;
+
 private:
+    GlobalMouseListener globalMouseListener;
+
+    bool dimensionsAreBeingEdited = false;
+
+    int lastMouseX, lastMouseY;
     LassoComponent<WeakReference<Component>> lasso;
 
     RateReducer canvasRateReducer = RateReducer(90);
